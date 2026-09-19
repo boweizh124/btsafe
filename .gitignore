@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+# Never commit key material or mnemonic backups.
+*.btsafe
+wallets/

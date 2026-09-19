@@ -1,0 +1,46 @@
+[project]
+name = "btsafe"
+version = "0.1.0"
+description = "btcli wrapper that keeps coldkey mnemonics out of the terminal by sealing them in an encrypted file"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    # btcli ships inside the bittensor package since 11.x. btsafe replaces a
+    # few of its commands in place, so it is held to the minor it was tested
+    # against; btsafe refuses to start if the commands it replaces moved.
+    "bittensor>=11.1.0,<11.2",
+    # Argon2id + ChaCha20-Poly1305 for the mnemonic file. bittensor's own
+    # keyfile encryption uses a fixed Argon2i salt, so it is not reused here.
+    "cryptography>=44",
+    # typer 0.27.2 dropped Exit from typer._click.exceptions, which btcli
+    # 11.1.0 catches on every exit (every command then exits 1 with a
+    # traceback). Lift once bittensor ships a fix.
+    "typer>=0.24,<0.27.2",
+]
+
+[project.scripts]
+btsafe = "btsafe.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/btsafe"]
+
+[dependency-groups]
+dev = [
+    "pexpect>=4.9",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

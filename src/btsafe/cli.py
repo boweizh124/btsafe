@@ -19,8 +19,9 @@ from . import commands
 
 HELP = (
     "btsafe - btcli with coldkey mnemonics kept off the screen. `wallet new-coldkey` "
-    "seals the mnemonic in an encrypted file and `wallet regen-coldkey` restores from "
-    "it; every other command is stock btcli."
+    "seals the mnemonic in an encrypted file, `wallet regen-coldkey` restores from it, "
+    "and `wallet show-mnemonic` displays it given the file's password; every other "
+    "command is stock btcli."
 )
 
 # `wallet create` accepts btcli's flags so any invocation reaches the refusal
@@ -65,9 +66,20 @@ def install(root: typer.Typer = btcli_main.app) -> None:
             f"btcli command(s) {', '.join(missing)} not found in this bittensor version; "
             "btsafe cannot guarantee mnemonics stay hidden"
         )
+    _add(btcli_wallet.app, "show-mnemonic", commands.show_mnemonic, btcli_wallet.PANEL_SECURITY)
     root.info.help = HELP
     # Tracebacks must never render local variables (mnemonics, passwords).
     root.pretty_exceptions_show_locals = False
+
+
+def _add(app: typer.Typer, name: str, callback: Callable[..., Any], panel: str) -> None:
+    """Register a btsafe-only command, with btcli's hidden snake_case alias, once."""
+    for alias, hidden in ((name, False), (name.replace("-", "_"), True)):
+        existing = [info for info in app.registered_commands if info.name == alias]
+        if any(info.callback is not callback for info in existing):
+            raise RuntimeError(f"btcli now has its own `wallet {alias}`; btsafe will not shadow it")
+        if not existing:
+            app.command(alias, hidden=hidden, rich_help_panel=panel)(callback)
 
 
 def _commands(app: typer.Typer, seen: set[int] | None = None) -> Iterator[CommandInfo]:

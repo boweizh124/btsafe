@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,9 +14,9 @@ from bittensor.keyfiles import Keypair
 from bittensor.sp_core import CRYPTO_SR25519
 from bittensor.wallet import Wallet
 
-from btsafe import backup
+from btsafe import backup, screen
 
-from .conftest import Terminal, isolated_env, run_detached
+from .conftest import BIN, Terminal, isolated_env, run_detached
 
 COLDKEY_PASSWORD = "coldkey-pass-1"
 FILE_PASSWORD = "file-password-2"
@@ -367,6 +368,58 @@ def test_without_a_terminal_nothing_is_created(env, tmp_path: Path):
     assert "no terminal available" in result.stderr
     assert not file.exists()
     assert not (tmp_path / "w").exists()
+
+
+# --- show-mnemonic ------------------------------------------------------------------
+
+
+def test_show_mnemonic_displays_the_words_only_on_the_terminal(created: Created, tmp_path: Path):
+    record = backup.decrypt(created.file.read_bytes(), FILE_PASSWORD)
+    stdout = tmp_path / "stdout.txt"
+    # Redirect stdout the way a user might (`> file`): the words must not land there.
+    command = (
+        f"{shlex.quote(str(BIN / 'btsafe'))} wallet show-mnemonic "
+        f"--mnemonic-file {shlex.quote(str(created.file))} > {shlex.quote(str(stdout))}"
+    )
+    term = Terminal("/bin/bash", ["-c", command], created.env)
+    term.answer("Enter the mnemonic file password: ", FILE_PASSWORD)
+    term.answer("Press Enter to hide the mnemonic", "")
+    assert term.finish() == 0, term.screen
+
+    shown = term.screen
+    assert record.mnemonic in shown
+    assert f" 1. {record.mnemonic.split()[0]} " in shown
+    assert record.ss58_address in shown
+    assert FILE_PASSWORD not in shown
+    assert stdout.read_text() == ""
+    # Shown on the alternate screen, and wiped before leaving it.
+    entered = shown.index(screen.ENTER_ALTERNATE_SCREEN)
+    words = shown.index(record.mnemonic)
+    left = shown.rindex(screen.LEAVE_ALTERNATE_SCREEN)
+    assert entered < words < shown.index(screen.CLEAR, words) < left
+
+
+def test_show_mnemonic_rejects_a_wrong_password(created: Created):
+    term = Terminal(
+        "btsafe", ["w", "show_mnemonic", "--mnemonic-file", str(created.file)], created.env
+    )
+    for _ in range(3):
+        term.answer("Enter the mnemonic file password: ", "not-the-password")
+        term.expect("wrong password")
+    assert term.finish() == 1
+    record = backup.decrypt(created.file.read_bytes(), FILE_PASSWORD)
+    assert_never_displayed(term.screen, record.mnemonic)
+    assert screen.ENTER_ALTERNATE_SCREEN not in term.screen
+
+
+def test_show_mnemonic_needs_a_terminal(created: Created):
+    result = run_detached(
+        ["wallet", "show-mnemonic", "--mnemonic-file", str(created.file)], created.env
+    )
+    assert result.returncode == 1
+    assert "no terminal available" in result.stderr
+    record = backup.decrypt(created.file.read_bytes(), FILE_PASSWORD)
+    assert_never_displayed(result.stdout + result.stderr, record.mnemonic)
 
 
 # --- the rest of btcli --------------------------------------------------------------

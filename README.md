@@ -4,19 +4,23 @@
 
 `btcli wallet new-coldkey` prints the new mnemonic to the terminal, where it stays in
 scrollback, terminal logs, screen recordings and over-the-shoulder view.
-`btcli wallet regen-coldkey` has you type or paste it back. btsafe wraps btcli and
-replaces those two commands:
+`btcli wallet regen-coldkey` has you type or paste it back. btsafe wraps btcli,
+replaces those two commands, and adds a third:
 
 - **`btsafe wallet new-coldkey`** never shows the mnemonic. It writes the mnemonic to an
   encrypted file and asks for **two different passwords**: one encrypts the coldkey in
   the wallet (as btcli does), and the other encrypts the mnemonic file.
 - **`btsafe wallet regen-coldkey`** reads that file. It asks for the file's password to
   decrypt it, then for a password to encrypt the regenerated coldkey.
+- **`btsafe wallet show-mnemonic`** displays the mnemonic from that file when you give
+  the file's password, for example to write it down or to import it into another wallet.
 
 Every other command is stock btcli (`btsafe stake add …`, `btsafe w list`, …). btsafe
 runs btcli's own app from the official `bittensor` package (11.1.0, which ships btcli)
 and swaps those commands into it. Global flags, `btcli config` defaults, `--json` and
-the `w`/`wallets`/snake_case aliases therefore work unchanged.
+the `w`/`wallets`/snake_case aliases therefore work unchanged. The coldkeys btsafe
+writes are ordinary btcli coldkeys: plain `btcli` (tested with 11.1.0 and 9.23.2)
+unlocks them with the coldkey password.
 
 ## Quick start
 
@@ -75,6 +79,31 @@ regenerated coldkey
 The key scheme comes from the file, so you do not need to remember `--crypto-type`. The
 regenerated address is checked against the one recorded when the file was created. Use
 `--overwrite` to replace a coldkey that is already in the wallet.
+
+### Show the mnemonic
+
+```bash
+btsafe wallet show-mnemonic --mnemonic-file /media/usb/mywallet.btsafe
+```
+
+btsafe asks for the password the file was encrypted with, and allows 3 attempts. Before
+showing anything, it checks that the phrase regenerates the address recorded in the
+file. It then displays:
+
+```
+Mnemonic for 5HYwmq4gE7dwNvTwY9na5Y7p3YzCTnG8WizT16VzSSNViM6C
+wallet mywallet, sr25519, sealed 2026-09-18T16:07:41+00:00
+
+    1. word       2. word       3. word       4. word
+    …
+   the whole phrase on one line, for pasting
+
+Press Enter to hide the mnemonic and clear the screen.
+```
+
+The words go to the terminal only, never to stdout, so `| tee` or `> file` cannot
+capture them. They appear on the terminal's alternate screen, the one `less` and `vim`
+use, which has no scrollback. They are wiped when you press Enter, or on Ctrl-C.
 
 If you leave out `--wallet` or `--mnemonic-file`, btsafe prompts for them on a terminal,
 as btcli does.
@@ -139,6 +168,11 @@ Argon2id with a per-file salt, via PyCA `cryptography`.
   coldkey password.
 - **Memory.** The mnemonic and passwords are ordinary Python strings while the command
   runs. Python cannot reliably wipe them from memory.
+- **What `show-mnemonic` cannot prevent.** Keeping the words off stdout and out of
+  scrollback does not stop anything that records the terminal itself: session logging
+  (`script`, tmux or screen logging, an SSH client's log), screen recording or sharing,
+  or a camera. A terminal without alternate-screen support keeps the words in its
+  scrollback.
 - **Failure after the file is written.** If writing the coldkey fails after the mnemonic
   file was written and verified, the file is kept, because it is a valid backup. The
   error is reported.
@@ -159,6 +193,8 @@ wallet path, so real wallets are never touched. They check that:
 
 - The mnemonic and passwords never appear on screen.
 - The file and the wallet hold the same key, and stock btcli regenerates the same
-  address from the sealed mnemonic.
+  address from the sealed mnemonic and unlocks the coldkey btsafe wrote.
 - `regen-coldkey` restores the key from the file.
+- `show-mnemonic` shows the words only with the right password, only on the alternate
+  screen, wipes them afterwards, and writes nothing to a redirected stdout.
 - Each refusal above leaves nothing behind.

@@ -1,4 +1,5 @@
-"""btsafe's versions of `btcli wallet new-coldkey`, `regen-coldkey` and `create`.
+"""btsafe's versions of `btcli wallet new-coldkey`, `regen-coldkey` and `create`,
+plus `show-mnemonic`, which btcli does not have.
 
 They run inside btcli's own app (see cli.py), so wallet selection, config
 defaults, --json/--quiet and output styling behave exactly as in btcli.
@@ -20,7 +21,7 @@ from bittensor.cli.prompt import confirm_wallet
 from bittensor.keyfiles import KeyfileError, Keypair
 from bittensor.wallet import Wallet
 
-from . import backup, passwords
+from . import backup, passwords, screen
 
 N_WORDS = (12, 15, 18, 21, 24)
 
@@ -39,6 +40,10 @@ _KEEP_SAFE = (
     "encrypted with the mnemonic-file password. Move that file to offline storage and "
     "keep the password somewhere else: the coldkey cannot be restored from the file "
     "without it. Restore with `btsafe wallet regen-coldkey --mnemonic-file PATH`."
+)
+_SHOW_WARNING = (
+    "The mnemonic will be displayed on this terminal. Make sure nobody can see your "
+    "screen and nothing is recording or sharing it."
 )
 
 
@@ -127,24 +132,14 @@ def regen_coldkey(
     """
     app_ctx: AppContext = ctx_of(ctx)
     with _refusals(app_ctx):
-        source = Path(mnemonic_file).expanduser()
-        if not source.is_file():
-            raise _Refusal(f"mnemonic file {source} does not exist")
-        data = backup.read(source)
-        backup.check(data)
+        source, data = _read_existing(mnemonic_file)
     confirm_wallet(app_ctx, help_text="Wallet to regenerate the coldkey in.", must_exist=False)
     with _refusals(app_ctx):
         wallet = Wallet(app_ctx.wallet_name, path=app_ctx.wallet_path)
         _check_replaceable(wallet, overwrite)
 
         record, file_password = _open_file(app_ctx, data)
-        crypto = wallets.parse_crypto_type(record.crypto_type)
-        derived = Keypair.create_from_mnemonic(record.mnemonic, crypto).ss58_address
-        if derived != record.ss58_address:
-            raise _Refusal(
-                f"the mnemonic in the file derives {derived}, "
-                f"but the file records {record.ss58_address}"
-            )
+        _check_derivation(record)
         coldkey_password = passwords.choose(
             label="coldkey",
             min_length=passwords.COLDKEY_MIN_LENGTH,
@@ -164,6 +159,27 @@ def regen_coldkey(
             "mnemonic_file": str(source),
         },
     )
+
+
+def show_mnemonic(
+    ctx: typer.Context,
+    mnemonic_file: str = typer.Option(..., "--mnemonic-file", help=_EXISTING_FILE_HELP),
+):
+    """Display the mnemonic sealed in an encrypted mnemonic file.
+
+    Asks for the password the file was encrypted with. The words appear on the
+    terminal's alternate screen, never on stdout (a pipe or redirect cannot
+    capture them), and are wiped from the terminal when you press Enter.
+    """
+    app_ctx: AppContext = ctx_of(ctx)
+    with _refusals(app_ctx):
+        _, data = _read_existing(mnemonic_file)
+        app_ctx.output.message(_SHOW_WARNING)
+        record, _ = _open_file(app_ctx, data)
+        # Never show a phrase that would not restore the recorded key.
+        _check_derivation(record)
+        screen.show_until_enter(_mnemonic_card(record))
+    app_ctx.output.message("mnemonic hidden and screen cleared")
 
 
 def create_disabled(ctx: typer.Context) -> None:
@@ -188,7 +204,14 @@ def _refusals(app_ctx: AppContext) -> Iterator[None]:
     except _Refusal as error:
         app_ctx.output.error(str(error), help=error.help)
         raise typer.Exit(1) from None
-    except (backup.BackupError, passwords.PasswordError, KeyfileError, OSError, ValueError) as e:
+    except (
+        backup.BackupError,
+        passwords.PasswordError,
+        screen.ScreenError,
+        KeyfileError,
+        OSError,
+        ValueError,
+    ) as e:
         app_ctx.output.error(str(e) or type(e).__name__)
         raise typer.Exit(1) from None
 
@@ -213,6 +236,34 @@ def _fresh_file_path(raw: str) -> Path:
     if not os.access(path.parent, os.W_OK):
         raise _Refusal(f"directory {path.parent} is not writable")
     return path
+
+
+def _read_existing(raw: str) -> tuple[Path, bytes]:
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise _Refusal(f"mnemonic file {path} does not exist")
+    data = backup.read(path)
+    backup.check(data)
+    return path, data
+
+
+def _check_derivation(record: backup.MnemonicRecord) -> None:
+    crypto = wallets.parse_crypto_type(record.crypto_type)
+    derived = Keypair.create_from_mnemonic(record.mnemonic, crypto).ss58_address
+    if derived != record.ss58_address:
+        raise _Refusal(
+            f"the mnemonic in the file derives {derived}, "
+            f"but the file records {record.ss58_address}"
+        )
+
+
+def _mnemonic_card(record: backup.MnemonicRecord) -> str:
+    return (
+        f"Mnemonic for {record.ss58_address}\n"
+        f"wallet {record.wallet_name}, {record.crypto_type}, sealed {record.created_at}\n\n"
+        f"{screen.numbered(record.mnemonic.split())}\n\n"
+        f"   {record.mnemonic}"
+    )
 
 
 def _check_replaceable(wallet: Wallet, overwrite: bool) -> None:

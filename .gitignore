@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
-# Never commit key material or mnemonic backups.
+# Never commit key material, mnemonic backups or credentials.
 *.btsafe
 wallets/
+.env
+*.env

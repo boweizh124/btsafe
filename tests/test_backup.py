@@ -131,6 +131,32 @@ def test_write_new_is_owner_only(tmp_path: Path):
     assert stat.S_IMODE((tmp_path / "a.btsafe").stat().st_mode) == 0o600
 
 
+def test_write_new_drops_the_file_from_the_page_cache(tmp_path: Path, monkeypatch):
+    """Reading a file back that is still cached would only prove what RAM holds, so the
+    new file is evicted once it is durable and the verify read reaches the drive."""
+    if not hasattr(os, "posix_fadvise"):
+        pytest.skip("posix_fadvise is only on platforms that have it (not macOS)")
+    advice = []
+    real_fadvise = os.posix_fadvise
+
+    def record(fd, offset, length, hint):
+        advice.append(hint)
+        real_fadvise(fd, offset, length, hint)
+
+    monkeypatch.setattr(os, "posix_fadvise", record)
+    backup.write_new(tmp_path / "a.btsafe", b"data")
+    assert advice == [os.POSIX_FADV_DONTNEED]
+
+
+def test_write_new_survives_a_filesystem_that_refuses_to_drop_caches(tmp_path: Path, monkeypatch):
+    def refuse(fd, offset, length, hint):
+        raise OSError("not supported here")
+
+    monkeypatch.setattr(os, "posix_fadvise", refuse, raising=False)
+    backup.write_new(tmp_path / "a.btsafe", b"data")
+    assert (tmp_path / "a.btsafe").read_bytes() == b"data"
+
+
 def test_write_new_never_replaces_a_file(tmp_path: Path):
     target = tmp_path / "a.btsafe"
     target.write_bytes(b"the only backup")

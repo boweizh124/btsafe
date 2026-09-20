@@ -33,7 +33,7 @@ class Terminal:
     def __init__(self, program: str, args: list[str], env: dict[str, str]) -> None:
         self._display = io.StringIO()
         self.child = pexpect.spawn(
-            str(BIN / program),
+            program if os.path.isabs(program) else str(BIN / program),
             args,
             env=env,
             encoding="utf-8",

@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from bittensor.keyfiles import Keypair
-from bittensor.sp_core import CRYPTO_SR25519
+from bittensor.sp_core import CRYPTO_ED25519, CRYPTO_SR25519
 from bittensor.wallet import Wallet
 
 from btsafe import backup
 
-from .conftest import Terminal, isolated_env, run_detached
+from .conftest import BIN, Terminal, isolated_env, run_detached
 
 COLDKEY_PASSWORD = "coldkey-pass-1"
 FILE_PASSWORD = "file-password-2"
 NEW_COLDKEY_PASSWORD = "coldkey-pass-3"
+# Cheap parameters for files this test module writes itself; btsafe always uses DEFAULT_KDF.
+FAST = backup.KdfParams(iterations=1, memory_kib=1024, lanes=1)
+VALID_MNEMONIC = "legal winner thank year wave sausage worth useful legal winner thank yellow"
 
 
 @dataclass
@@ -59,6 +63,40 @@ def created(tmp_path_factory: pytest.TempPathFactory) -> Created:
             str(wallets),
             "--mnemonic-file",
             str(file),
+        ],
+        env,
+    )
+    term.answer("Enter a new coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Retype the coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Enter a new mnemonic file password: ", FILE_PASSWORD)
+    term.answer("Retype the mnemonic file password: ", FILE_PASSWORD)
+    exit_code = term.finish()
+    return Created(env, wallets, file, term.screen, exit_code)
+
+
+@pytest.fixture(scope="module")
+def ed25519(tmp_path_factory: pytest.TempPathFactory) -> Created:
+    """The other key scheme, with the longest mnemonic: both must survive the round trip."""
+    root = tmp_path_factory.mktemp("ed25519")
+    env = isolated_env(root)
+    wallets, backups = root / "wallets", root / "usb"
+    backups.mkdir()
+    file = backups / "erin.btsafe"
+    term = Terminal(
+        "btsafe",
+        [
+            "wallet",
+            "new-coldkey",
+            "--wallet",
+            "erin",
+            "--wallet-path",
+            str(wallets),
+            "--mnemonic-file",
+            str(file),
+            "--crypto-type",
+            "ed25519",
+            "--n-words",
+            "24",
         ],
         env,
     )
@@ -401,3 +439,177 @@ def test_other_commands_pass_through_to_btcli(created: Created):
     listed = {ck["coldkey"]: ck["ss58"] for ck in json.loads(result.stdout)["coldkeys"]}
     record = backup.decrypt(created.file.read_bytes(), FILE_PASSWORD)
     assert listed["alice"] == record.ss58_address
+
+
+# --- both key schemes ---------------------------------------------------------------
+
+
+def test_new_coldkey_seals_the_scheme_it_created(ed25519: Created):
+    assert ed25519.exit_code == 0, ed25519.screen
+    record = backup.decrypt(ed25519.file.read_bytes(), FILE_PASSWORD)
+    assert record.crypto_type == "ed25519"
+    assert len(record.mnemonic.split()) == 24
+    assert_never_displayed(ed25519.screen, record.mnemonic, COLDKEY_PASSWORD, FILE_PASSWORD)
+    assert Wallet("erin", path=str(ed25519.wallets)).coldkeypub.crypto_type == CRYPTO_ED25519
+
+
+def test_regen_coldkey_takes_the_scheme_from_the_file(ed25519: Created):
+    """No --crypto-type is passed: the sr25519 default would restore a different key."""
+    term = Terminal(
+        "btsafe",
+        [
+            "wallet",
+            "regen-coldkey",
+            "--wallet",
+            "erin-restored",
+            "--wallet-path",
+            str(ed25519.wallets),
+            "--mnemonic-file",
+            str(ed25519.file),
+        ],
+        ed25519.env,
+    )
+    term.answer("Enter the mnemonic file password: ", FILE_PASSWORD)
+    term.answer("Enter a new coldkey password: ", NEW_COLDKEY_PASSWORD)
+    term.answer("Retype the coldkey password: ", NEW_COLDKEY_PASSWORD)
+    assert term.finish() == 0, term.screen
+
+    record = backup.decrypt(ed25519.file.read_bytes(), FILE_PASSWORD)
+    restored = Wallet("erin-restored", path=str(ed25519.wallets))
+    assert restored.coldkeypub.ss58_address == record.ss58_address
+    assert restored.get_coldkey(NEW_COLDKEY_PASSWORD).crypto_type == CRYPTO_ED25519
+
+
+def test_new_coldkey_overwrite_rotates_the_key(ed25519: Created):
+    """--overwrite replaces the wallet's coldkey; the old file still opens the old key."""
+    old = backup.decrypt(ed25519.file.read_bytes(), FILE_PASSWORD)
+    rotated = ed25519.file.with_name("erin-rotated.btsafe")
+    term = Terminal(
+        "btsafe",
+        [
+            "wallet",
+            "new-coldkey",
+            "--wallet",
+            "erin",
+            "--wallet-path",
+            str(ed25519.wallets),
+            "--mnemonic-file",
+            str(rotated),
+            "--overwrite",
+        ],
+        ed25519.env,
+    )
+    term.answer("Enter a new coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Retype the coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Enter a new mnemonic file password: ", FILE_PASSWORD)
+    term.answer("Retype the mnemonic file password: ", FILE_PASSWORD)
+    assert term.finish() == 0, term.screen
+
+    new = backup.decrypt(rotated.read_bytes(), FILE_PASSWORD)
+    assert new.ss58_address != old.ss58_address
+    wallet = Wallet("erin", path=str(ed25519.wallets))
+    assert wallet.coldkeypub.ss58_address == new.ss58_address
+    assert wallet.get_coldkey(COLDKEY_PASSWORD).ss58_address == new.ss58_address
+    assert backup.decrypt(ed25519.file.read_bytes(), FILE_PASSWORD) == old
+
+
+# --- machine-readable output --------------------------------------------------------
+
+
+def test_json_mode_prints_one_record_and_no_secret(env, tmp_path: Path):
+    """stdout is redirected to a file, so only the prompts reach the terminal."""
+    file, out = tmp_path / "grace.btsafe", tmp_path / "out.json"
+    argv = [
+        str(BIN / "btsafe"), "wallet", "new-coldkey",
+        "--wallet", "grace",
+        "--wallet-path", str(tmp_path / "w"),
+        "--mnemonic-file", str(file),
+        "--json",
+    ]  # fmt: skip
+    command = f"{shlex.join(argv)} > {shlex.quote(str(out))}"
+    term = Terminal("/bin/sh", ["-c", command], env)
+    term.answer("Enter a new coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Retype the coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Enter a new mnemonic file password: ", FILE_PASSWORD)
+    term.answer("Retype the mnemonic file password: ", FILE_PASSWORD)
+    assert term.finish() == 0, term.screen
+
+    record = backup.decrypt(file.read_bytes(), FILE_PASSWORD)
+    printed = json.loads(out.read_text())
+    assert printed == {
+        "wallet": "grace",
+        "crypto_type": "sr25519",
+        "ss58": record.ss58_address,
+        "mnemonic_file": str(file),
+    }
+    assert_never_displayed(out.read_text(), record.mnemonic, COLDKEY_PASSWORD, FILE_PASSWORD)
+    assert_never_displayed(term.screen, record.mnemonic, COLDKEY_PASSWORD, FILE_PASSWORD)
+
+
+# --- more guard rails ---------------------------------------------------------------
+
+
+def test_regen_coldkey_refuses_a_file_that_records_another_address(env, tmp_path: Path):
+    """Authentic file, contradictory contents: only someone with the password could
+    have written it, so the mnemonic is not trusted over the recorded address."""
+    lying = backup.MnemonicRecord(
+        mnemonic=VALID_MNEMONIC,
+        ss58_address="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+        crypto_type="sr25519",
+        wallet_name="heidi",
+        created_at="2026-09-18T00:00:00+00:00",
+    )
+    file = tmp_path / "heidi.btsafe"
+    file.write_bytes(backup.encrypt(lying, FILE_PASSWORD, FAST))
+    term = Terminal(
+        "btsafe",
+        [
+            "wallet",
+            "regen-coldkey",
+            "--wallet",
+            "heidi",
+            "--wallet-path",
+            str(tmp_path / "w"),
+            "--mnemonic-file",
+            str(file),
+        ],
+        env,
+    )
+    term.answer("Enter the mnemonic file password: ", FILE_PASSWORD)
+    term.expect("but the file records")
+    assert term.finish() == 1
+    assert not (tmp_path / "w").exists()
+
+
+def test_a_failed_coldkey_write_keeps_the_file_and_says_what_it_is(env, tmp_path: Path):
+    """The wallet path is a regular file, so the coldkey cannot be written — after the
+    mnemonic file has been written and verified."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+    file = tmp_path / "ivan.btsafe"
+    term = Terminal(
+        "btsafe",
+        [
+            "wallet",
+            "new-coldkey",
+            "--wallet",
+            "ivan",
+            "--wallet-path",
+            str(blocker),
+            "--mnemonic-file",
+            str(file),
+        ],
+        env,
+    )
+    term.answer("Enter a new coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Retype the coldkey password: ", COLDKEY_PASSWORD)
+    term.answer("Enter a new mnemonic file password: ", FILE_PASSWORD)
+    term.answer("Retype the mnemonic file password: ", FILE_PASSWORD)
+    assert term.finish() == 1
+
+    screen = " ".join(term.screen.split())
+    assert "has been kept" in screen
+    assert "regen-coldkey --mnemonic-file" in screen
+    record = backup.decrypt(file.read_bytes(), FILE_PASSWORD)
+    assert record.wallet_name == "ivan"
+    assert_never_displayed(term.screen, record.mnemonic, COLDKEY_PASSWORD, FILE_PASSWORD)

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import os
 import secrets
@@ -39,7 +40,6 @@ FORMAT = "btsafe-mnemonic"
 VERSION = 1
 KDF_NAME = "argon2id"
 CIPHER_NAME = "chacha20-poly1305"
-SUFFIX = ".btsafe"
 
 SALT_BYTES = 16
 NONCE_BYTES = 12
@@ -147,7 +147,9 @@ def write_new(path: Path, data: bytes) -> None:
     """Create ``path`` owner-only and durable; never replaces an existing file.
 
     O_EXCL (rather than write-then-rename) keeps this working on FAT/exFAT
-    removable media, where a mnemonic file is likely to be kept.
+    removable media, where a mnemonic file is likely to be kept. The file is
+    dropped from the page cache once it is durable, so reading it back reaches
+    the drive.
     """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -156,6 +158,7 @@ def write_new(path: Path, data: bytes) -> None:
             while view:
                 view = view[os.write(fd, view) :]
             os.fsync(fd)
+            _drop_from_page_cache(fd)
         finally:
             os.close(fd)
     except BaseException:
@@ -238,6 +241,19 @@ def _unb64(value: Any, where: str) -> bytes:
         return base64.b64decode(value, validate=True)
     except binascii.Error:
         raise BackupError(f"{where} is not valid base64") from None
+
+
+def _drop_from_page_cache(fd: int) -> None:
+    """Evict a just-fsynced file, so the next read of it comes from the device.
+
+    Reading a file back moments after writing it is otherwise served from RAM,
+    which says nothing about what a removable drive actually stored. Advisory
+    and best effort: absent on macOS, and not honored by every filesystem.
+    """
+    if not hasattr(os, "posix_fadvise"):
+        return
+    with contextlib.suppress(OSError):
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
 
 
 def _fsync_directory(directory: Path) -> None:

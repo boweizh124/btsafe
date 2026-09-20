@@ -1,3 +1,7 @@
+# Recipe arguments arrive as "$1", "$2" instead of being pasted into the
+# command line, so a wallet path with spaces (/Volumes/NO NAME/...) works.
+set positional-arguments := true
+
 default: check
 
 # Install dependencies into .venv
@@ -16,8 +20,8 @@ fmt:
 
 # Create a coldkey:  just new-coldkey mywallet /media/usb/mywallet.btsafe
 new-coldkey wallet file:
-    uv run btsafe wallet new-coldkey --wallet {{wallet}} --mnemonic-file {{file}}
+    uv run btsafe wallet new-coldkey --wallet "$1" --mnemonic-file "$2"
 
 # Restore a coldkey:  just regen-coldkey mywallet /media/usb/mywallet.btsafe
 regen-coldkey wallet file:
-    uv run btsafe wallet regen-coldkey --wallet {{wallet}} --mnemonic-file {{file}}
+    uv run btsafe wallet regen-coldkey --wallet "$1" --mnemonic-file "$2"

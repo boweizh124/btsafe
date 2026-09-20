@@ -10,6 +10,10 @@ COLDKEY_MIN_LENGTH = 8
 # The mnemonic file is meant to live off-machine, where anyone who finds it
 # can guess offline for as long as they like, so it gets the longer minimum.
 FILE_MIN_LENGTH = 12
+# Length alone accepts "aaaaaaaaaaaa". This is a floor under the worst
+# passwords, not a strength meter: a long string of common words still passes,
+# so pick something with real entropy.
+MIN_DISTINCT_CHARACTERS = 5
 MAX_ATTEMPTS = 3
 
 
@@ -42,6 +46,10 @@ def problem(
     """Why ``password`` is unacceptable, or None."""
     if len(password) < min_length:
         return f"the {label} password must be at least {min_length} characters"
+    if len(set(password)) < MIN_DISTINCT_CHARACTERS:
+        return (
+            f"the {label} password must use at least {MIN_DISTINCT_CHARACTERS} different characters"
+        )
     if other is not None and password == other:
         return f"the {label} password must differ from the {other_label} password"
     return None

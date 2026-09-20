@@ -41,7 +41,8 @@ created coldkey
     crypto_type  sr25519
            ss58  5HYwmq4gE7dwNvTwY9na5Y7p3YzCTnG8WizT16VzSSNViM6C
   mnemonic_file  /media/usb/mywallet.btsafe
-The mnemonic was not displayed. It exists only in the mnemonic_file above, …
+The mnemonic was not displayed. It exists in two encrypted copies: the mnemonic_file
+above, under the mnemonic-file password, and the wallet's coldkey keyfile, under …
 ```
 
 The order of operations guarantees you never end up with a coldkey that has no working
@@ -49,7 +50,8 @@ backup:
 
 1. btsafe asks for both passwords before generating anything.
 2. It writes the mnemonic file.
-3. It reads the file back and decrypts it.
+3. It drops the file from the page cache and reads it back, so the bytes come from the
+   drive rather than from RAM, and decrypts them.
 4. Only after that succeeds does it write the coldkey.
 5. It then unlocks the written coldkey with its password to confirm it.
 
@@ -85,7 +87,9 @@ as btcli does.
   coldkey password, in both commands.
 - **Minimum lengths.** The coldkey password needs at least 8 characters. The
   mnemonic-file password needs at least 12, because the file is meant to be stored
-  off-machine, where whoever finds it can guess offline without limit. Each prompt allows
+  off-machine, where whoever finds it can guess offline without limit. Both need at least
+  5 different characters, which rejects `aaaaaaaaaaaa`; that is a floor under the worst
+  passwords, not a strength meter, so pick one with real entropy. Each prompt allows
   3 attempts.
 - **Passwords come only from the terminal.** They are read with echo off. btsafe has no
   password flags or environment variables. Without a terminal it refuses to run (it
@@ -99,8 +103,11 @@ as btcli does.
 - **`wallet create` is disabled.** It prints the coldkey mnemonic too. Run
   `btsafe wallet new-coldkey` and then `btsafe wallet new-hotkey` instead.
 - **It fails closed.** At startup btsafe checks that every registration of the btcli
-  commands it replaces has been swapped out. If a bittensor release moves them, btsafe
-  refuses to start rather than fall through to a command that prints a mnemonic.
+  commands it replaces has been swapped out, and that bittensor's `regenerate_coldkey`
+  still names every argument btsafe passes it. That call ends in `**_`, so it drops
+  keywords it no longer names: a renamed `suppress` would print the mnemonic without
+  raising anything. If a bittensor release moves or renames either, btsafe refuses to
+  start rather than fall through to a command that prints a mnemonic.
 
 ## The mnemonic file
 
@@ -134,14 +141,26 @@ Argon2id with a per-file salt, via PyCA `cryptography`.
 
 ## Limits
 
-- **Coldkey keyfile.** The coldkey is still written by bittensor's own keyfile code.
-  Like any btcli coldkey, the encrypted keyfile contains the mnemonic, protected by the
-  coldkey password.
+- **Two encrypted copies of the mnemonic.** The coldkey is still written by bittensor's
+  own keyfile code, and like any btcli coldkey that keyfile holds the mnemonic as well
+  (its `secretPhrase` field), encrypted with the coldkey password. Nothing is written in
+  the clear: the wallet holds `coldkey`, which is ciphertext, and `coldkeypub.txt`, which
+  is only the address and public key. So the phrase exists twice, under two different
+  passwords, and whoever finds the mnemonic file still needs its password. Note that
+  bittensor derives the keyfile's key with one hard-coded Argon2i salt, so treat a copy
+  of `coldkey` as offline-guessable too.
+- **Hotkeys are not covered.** `wallet new-hotkey` still prints the hotkey mnemonic and
+  `wallet regen-hotkey` still takes one typed in; btsafe replaces the coldkey commands
+  only. A hotkey cannot move funds, but it does sign as your miner or validator.
+- **Other coldkey import sources.** btsafe's `regen-coldkey` restores from a btsafe
+  mnemonic file. Stock btcli's `--mnemonic`, `--seed`, `--private-key` and `--json-path`
+  (PolkadotJS keystore) imports are not available through it; use `btcli` for those.
 - **Memory.** The mnemonic and passwords are ordinary Python strings while the command
   runs. Python cannot reliably wipe them from memory.
 - **Failure after the file is written.** If writing the coldkey fails after the mnemonic
-  file was written and verified, the file is kept, because it is a valid backup. The
-  error is reported.
+  file was written and verified, the file is kept, because it is a valid backup of a
+  coldkey that is in no wallet. The error says so, and points at
+  `btsafe wallet regen-coldkey --mnemonic-file PATH` to finish the job.
 - **Pinned versions.** btsafe replaces commands inside btcli, so it is held to
   `bittensor>=11.1.0,<11.2`. It also pins `typer<0.27.2`, because typer 0.27.2 makes
   every btcli 11.1.0 command exit 1 with a traceback. After upgrading either one, run
@@ -157,8 +176,11 @@ The end-to-end tests run `btsafe` (and stock `btcli`, for comparison) on a
 pseudo-terminal, typing passwords at the real prompts. They use a throwaway `HOME` and
 wallet path, so real wallets are never touched. They check that:
 
-- The mnemonic and passwords never appear on screen.
+- The mnemonic and passwords never appear on screen, including in `--json` mode, where
+  stdout stays a single machine-readable record.
 - The file and the wallet hold the same key, and stock btcli regenerates the same
   address from the sealed mnemonic.
-- `regen-coldkey` restores the key from the file.
-- Each refusal above leaves nothing behind.
+- `regen-coldkey` restores the key from the file, for both key schemes: an ed25519
+  coldkey sealed with 24 words comes back as ed25519 without naming `--crypto-type`.
+- Each refusal above leaves nothing behind, and btsafe refuses to start at all if
+  bittensor's `regenerate_coldkey` stops naming the arguments btsafe passes it.
